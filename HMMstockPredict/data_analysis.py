@@ -12,7 +12,6 @@ from hmmlearn.hmm import GMMHMM
 from hmmlearn.hmm import GaussianHMM
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
-from sklearn.cluster import KMeans
 import datetime
 import holidays
 import pickle
@@ -37,11 +36,11 @@ class StockPredictor(object):
         self.n_mix_components = n_mix_components
         self.folder_path = folder_path
         if mode == 'train': 
-            #self.hmm = GMMHMM(n_components=n_hidden_states, n_mix= n_mix_components, init_params="mcw")
+            #self.hmm = GMMHMM(n_components=n_hidden_states, n_mix=n_mix_components, init_params="mcw")
             self.hmm = GaussianHMM(n_components=n_hidden_states, init_params="mcw")
-            self._split_train_test_data(data, test_size)
+            self._split_train_test_data(data, test_size=0.05)
         else:
-            with open(f"{folder_path}\{stock_name}_model.pkl", "rb") as file: self.hmm = pickle.load(file)
+            with open(f"{folder_path}/trained_models/{stock_name}_model.pkl", "rb") as file: self.hmm = pickle.load(file)
             
             if np.isnan(data['close'].iloc[0]): 
                 self.target_day_open = data['open'].iloc[len(data)-1]
@@ -52,7 +51,8 @@ class StockPredictor(object):
                 self.target_day_open = data['close'].iloc[len(data)-1]
                 self.prediction_date = self._next_busyness_day(data['Date'].iloc[len(data)-1])
                 self._test_data = data
-                
+            
+            self.predict_date_str = datetime.datetime.strftime(self.prediction_date, '%m-%d-%Y')  
 
         self._compute_all_possible_outcomes(
             n_steps_frac_change, n_steps_frac_high, n_steps_frac_low)
@@ -70,7 +70,6 @@ class StockPredictor(object):
     def _split_train_test_data(self, data, test_size):
         _train_data, test_data = train_test_split(
             data, test_size=test_size, shuffle=False)
- 
         self._train_data = _train_data
         self._test_data = test_data
  
@@ -115,9 +114,10 @@ class StockPredictor(object):
             frac_change_range, frac_high_range, frac_low_range)))
  
     def _get_most_probable_outcome(self, day_index):
-        previous_data_start_index = max(0, day_index - self.n_latency_days)
-        previous_data_end_index = max(0, day_index - 1)
-        previous_data = self._test_data.iloc[previous_data_end_index: previous_data_start_index]
+        self.previous_data_start_index = max(0, day_index - self.n_latency_days)
+        self.previous_data_end_index = max(0, day_index - 1)
+        
+        previous_data = self._test_data.iloc[self.previous_data_end_index: self.previous_data_start_index]
         previous_data_features = StockPredictor._extract_features(
             previous_data)
  
@@ -137,7 +137,7 @@ class StockPredictor(object):
         return open_price * (1 + predicted_frac_change)
  
     def mape_estimate(self, y_true, y_pred): 
-        return np.mean(np.abs((y_true - y_pred) / y_true)) * 100 #TODO - validate no zeros in t_ture
+        return np.mean(np.abs((y_true - y_pred) / y_true)) * 100 
     
      
     
@@ -149,8 +149,8 @@ class StockPredictor(object):
         #compute score
         test_data = self._test_data[0: days]
         actual_close_prices = test_data['close']
-        mape_score  = self.mape_estimate(actual_close_prices, predicted_close_prices)
-        print(f"MAPE score for {self.stock_name}="+str(mape_score))
+        self.mape_score  = self.mape_estimate(actual_close_prices, predicted_close_prices)
+        print(f"MAPE score for {self.stock_name}="+str(self.mape_score))
         # plot results
         
         days = np.array(test_data['Date'])# dtype="datetime64[ms]")
@@ -166,15 +166,16 @@ class StockPredictor(object):
             fig.autofmt_xdate()
 
             plt.legend()
-            plt.show()
+            plt.show(block=False)
+          
+            plt.savefig(f"{self.folder_path}/results/{self.stock_name}_test_prediction.png")
         
-        np.savetxt(f"{self.folder_path}\{self.stock_name}_Predciction", predicted_close_prices, delimiter=",") #fix
 
         return predicted_close_prices
 
     def predict_close_prices_for_current(self, with_plot=False ):
-        predicted_close_prices = self.predict_close_price(len(self._test_data), self.target_day_open )
-        print(f"""{self.stock_name} predicted price for {datetime.datetime.strftime(self.prediction_date, '%m/%d/%Y')} is {predicted_close_prices}""")            
+        self.predicted_close = self.predict_close_price(len(self._test_data), self.target_day_open )
+        print(f"""{self.stock_name} predicted price for {datetime.datetime.strftime(self.prediction_date, '%m/%d/%Y')} is {self.predicted_close}""")            
         close_prices = self._test_data['close']
         if with_plot:
             dates_plt = dates.date2num(pd.to_datetime(self._test_data['Date'], format='%m/%d/%Y'))
@@ -182,41 +183,17 @@ class StockPredictor(object):
             fig = plt.figure()
 
             axes = fig.add_subplot(111)
-            axes.plot(dates_plt, close_prices, 'bo-', label="actual")
-            axes.plot(dates.date2num(self.prediction_date), predicted_close_prices, 'r+-', label="predicted")
+            axes.plot(dates_plt[self.previous_data_start_index:self.previous_data_end_index], 
+                close_prices[self.previous_data_start_index:self.previous_data_end_index], 'bo-', label="actual")
+            axes.plot(dates.date2num(self.prediction_date), self.predicted_close, 'r+-', label="predicted")
             axes.set_title('{stock_name}'.format(stock_name=self.stock_name))
             fig.autofmt_xdate()
 
             plt.legend()
-            plt.show()
+            #plt.show(block=False)
+            plt.savefig(f"{self.folder_path}/results/{self.stock_name}_prediction_{self.predict_date_str}.png")
             
 
 
 
-
-        # def _init_params(self, feature_vector, n_mix_components=self.n_mix_components)
-        #     self.kmeans = KMeans(n_clusters=n_mix_components)
-        #     self.kmeans.fit(feature_vector)
-        #     means = self.kmeans.cluster_centers_
-        #     # Get all the labaled data saperately
-        #     mydict = {i: np.where(self.kmeans.labels_ == i)[0] for i in range(self.kmeans.n_clusters)}
-
-        #     print ('Means: {0}'.format(means))
-
-        #     total_cluster = float(len(feature_vector)) 
-        #     all_GMM_params = []
-        #     for key in mydict:
-        #         cluster = feature_vector[mydict[key]]
-        #         GMM_params = []
-        #         weight = float(len(cluster))/total_cluster
-        #         covar = np.cov(cluster)
-        #         GMM_params.append(weight)
-        #         GMM_params.append(covar)
-        #         all_GMM_params.append(GMM_params)
-
-        #     for i in range(len(means)):
-        #         all_GMM_params[i].append(means[i])
-            
-        #       self.init_gmm_params = all_GMM_params
- 
  
